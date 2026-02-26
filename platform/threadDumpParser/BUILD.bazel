@@ -23,15 +23,19 @@ jvm_library(
   deps = [
     "@lib//:kotlin-stdlib",
     "//platform/util",
+    "//platform/util:util_test_lib",
     "//platform/platform-impl:ide-impl",
     "//tools/intellij.tools.ide.metrics.benchmark:ide-metrics-benchmark",
     "//tools/intellij.tools.ide.metrics.benchmark:ide-metrics-benchmark_test_lib",
     "//platform/testFramework",
     "//platform/testFramework:testFramework_test_lib",
     "//libraries/jackson/jackson",
+    "//libraries/jackson/jackson:jackson_test_lib",
     "//libraries/jackson/databind",
+    "//libraries/jackson/databind:databind_test_lib",
     "@lib//:junit4",
-  ]
+  ],
+  runtime_deps = ["//platform/platform-impl:ide-impl_test_lib"]
 )
 ### auto-generated section `build intellij.platform.threadDumpParser` end
 

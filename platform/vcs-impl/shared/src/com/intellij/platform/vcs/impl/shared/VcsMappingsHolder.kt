@@ -8,11 +8,15 @@ import com.intellij.openapi.vcs.FilePath
 import com.intellij.openapi.vcs.VcsKey
 import com.intellij.openapi.vcs.util.paths.FilePathMapping
 import com.intellij.platform.project.projectId
-import com.intellij.platform.vcs.impl.shared.rpc.RepositoryId
 import com.intellij.platform.vcs.impl.shared.rpc.VcsMappingsApi
 import com.intellij.platform.vcs.impl.shared.rpc.VcsMappingsDto
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import org.jetbrains.annotations.ApiStatus
 
 @ApiStatus.Internal
@@ -39,10 +43,7 @@ private class VcsMappingsHolderImpl(val project: Project, cs: CoroutineScope) : 
   override fun getRootFor(filePath: FilePath): FilePath? = getMappingFor(filePath)?.path
 
   override fun getRepositoryIdFor(filePath: FilePath): RepositoryId? {
-    val mapping = getMappingFor(filePath) ?: return null
-    if (mapping.vcs == null) return null
-
-    return RepositoryId(project.projectId(), mapping.path.path)
+    return getMappingFor(filePath)?.repositoryId(project)
   }
 
   override fun getAllRoots(): List<FilePath> = mappings.value.values().map { it.path }
@@ -64,4 +65,7 @@ private class VcsMappingsHolderImpl(val project: Project, cs: CoroutineScope) : 
 private data class VcsMappedRoot(
   val path: FilePath,
   val vcs: VcsKey?,
-)
+) {
+  fun repositoryId(project: Project): RepositoryId? =
+    if (vcs != null) RepositoryId.from(project.projectId(), path) else null
+}

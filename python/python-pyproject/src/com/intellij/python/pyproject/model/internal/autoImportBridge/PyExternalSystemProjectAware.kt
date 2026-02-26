@@ -1,37 +1,63 @@
 package com.intellij.python.pyproject.model.internal.autoImportBridge
 
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.writeAction
 import com.intellij.openapi.components.service
-import com.intellij.openapi.externalSystem.autoimport.*
-import com.intellij.openapi.externalSystem.model.ProjectSystemId
+import com.intellij.openapi.diagnostic.fileLogger
+import com.intellij.openapi.externalSystem.autoimport.ExternalSystemProjectAware
+import com.intellij.openapi.externalSystem.autoimport.ExternalSystemProjectId
+import com.intellij.openapi.externalSystem.autoimport.ExternalSystemProjectListener
+import com.intellij.openapi.externalSystem.autoimport.ExternalSystemProjectReloadContext
+import com.intellij.openapi.externalSystem.autoimport.ExternalSystemRefreshStatus
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.progress.runBlockingMaybeCancellable
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.project.guessProjectDir
 import com.intellij.platform.backend.observation.launchTracked
-import com.intellij.python.pyproject.model.api.ModelRebuiltListener
-import com.intellij.python.pyproject.model.internal.PyProjectTomlBundle
+import com.intellij.project.stateStore
+import com.intellij.python.pyproject.model.internal.PY_PROJECT_SYSTEM_ID
+import com.intellij.python.pyproject.model.internal.PyProjectScopeService
+import com.intellij.python.pyproject.model.internal.notifyModelRebuilt
+import com.intellij.python.pyproject.model.internal.pyProjectToml.walkFileSystemNoTomlContent
+import com.intellij.python.pyproject.model.internal.pyProjectToml.walkFileSystemWithTomlContent
 import com.intellij.python.pyproject.model.internal.workspaceBridge.rebuildProjectModel
 import com.intellij.util.concurrency.annotations.RequiresBackgroundThread
 import com.intellij.util.messages.Topic
+import com.intellij.util.ui.EDT
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import org.jetbrains.annotations.ApiStatus
+import org.jetbrains.annotations.VisibleForTesting
 import java.nio.file.Path
 import kotlin.io.path.pathString
 
-internal class PyExternalSystemProjectAware private constructor(
+@ApiStatus.Internal
+@VisibleForTesting
+class PyExternalSystemProjectAware private constructor(
   private val project: Project,
-  projectRootDir: Path,
+  private val projectRootDir: Path,
 ) : ExternalSystemProjectAware {
-  override val projectId: ExternalSystemProjectId = ExternalSystemProjectId(SYSTEM_ID, projectRootDir.pathString)
+  override val projectId: ExternalSystemProjectId = ExternalSystemProjectId(PY_PROJECT_SYSTEM_ID, projectRootDir.pathString)
 
-  private val fsInfo = FsInfoStorage(projectRootDir)
 
   @get:RequiresBackgroundThread
   override val settingsFiles: Set<String>
-    get() = runBlockingMaybeCancellable {
-      val fsInfo = fsInfo.getFsInfo(forceRefresh = true)
-      return@runBlockingMaybeCancellable fsInfo.tomlFiles.keys.map { it.pathString }.toSet()
+    get() {
+      if (EDT.isCurrentThreadEdt() && ApplicationManager.getApplication().isUnitTestMode) {
+        // Some tests are broken and access it from EDT.
+        // Since `@RequiresBackgroundThread` doesn't work for Kotlin, we can't check it in advance.
+        // This part will be rewritten soon anyway, so for now enjoy workaround
+        log.warn("Access from EDT, settingsFiles are empty")
+        return emptySet()
+      }
+      return runBlockingMaybeCancellable {
+        // We do not need file content: only names here.
+        val fsInfo = walkFileSystemNoTomlContent(projectRootDir).getOr {
+          // Dir can't be accessed
+          log.trace(it.error)
+          return@runBlockingMaybeCancellable emptySet()
+        }
+        return@runBlockingMaybeCancellable fsInfo.rawTomlFiles.map { it.pathString }.toSet()
+      }
     }
 
   override fun subscribe(listener: ExternalSystemProjectListener, parentDisposable: Disposable) {
@@ -39,41 +65,58 @@ internal class PyExternalSystemProjectAware private constructor(
   }
 
   override fun reloadProject(context: ExternalSystemProjectReloadContext) {
-    project.service<PyProjectAutoImportService>().scope.launchTracked {
-      project.messageBus.syncAndPreloadPublisher(PROJECT_AWARE_TOPIC).apply {
-        try {
-          val files = fsInfo.getFsInfo(forceRefresh = context.hasUndefinedModifications)
-          this.onProjectReloadStart()
-          rebuildProjectModel(project, files)
-          this.onProjectReloadFinish(ExternalSystemRefreshStatus.SUCCESS)
-          // Even though we have no entities, we still "rebuilt" the model
-          withContext(Dispatchers.Default) {
-            project.messageBus.syncPublisher(MODEL_REBUILD).modelRebuilt(project)
+    project.service<PyProjectScopeService>().scope.launchTracked {
+      reloadProjectImpl()
+    }
+  }
+
+  @ApiStatus.Internal
+  @VisibleForTesting
+  suspend fun reloadProjectImpl() {
+    writeAction {
+      // We might get stale files otherwise
+      FileDocumentManager.getInstance().saveAllDocuments()
+    }
+
+    project.messageBus.syncAndPreloadPublisher(PROJECT_AWARE_TOPIC).apply {
+      try {
+        this.onProjectReloadStart()
+        val files = walkFileSystemWithTomlContent(projectRootDir).getOr {
+          if (log.isTraceEnabled) {
+            log.warn("Can't access $projectRootDir", it.error)
           }
-        }
-        catch (e: CancellationException) {
-          this.onProjectReloadFinish(ExternalSystemRefreshStatus.CANCEL)
-          throw e
-        }
-        catch (e: Exception) {
           this.onProjectReloadFinish(ExternalSystemRefreshStatus.FAILURE)
-          throw e
+          return
         }
+        rebuildProjectModel(project, files)
+        this.onProjectReloadFinish(ExternalSystemRefreshStatus.SUCCESS)
+        // Even though we have no entities, we still "rebuilt" the model, time to configure SDK
+        notifyModelRebuilt(project)
+      }
+      catch (e: CancellationException) {
+        this.onProjectReloadFinish(ExternalSystemRefreshStatus.CANCEL)
+        throw e
+      }
+      catch (e: Exception) {
+        this.onProjectReloadFinish(ExternalSystemRefreshStatus.FAILURE)
+        throw e
       }
     }
   }
 
 
   companion object {
-    internal suspend fun create(project: Project): PyExternalSystemProjectAware {
-      val baseDir = withContext(Dispatchers.IO) {
-        project.guessProjectDir()?.toNioPath() ?: error("Project $project has no base dir")
-      }
+    /**
+     * [project] can't be default, be sure to check it
+     */
+    @ApiStatus.Internal
+    @VisibleForTesting
+    fun create(project: Project): PyExternalSystemProjectAware {
+      assert(!project.isDefault) { "Default project not supported" }
+      // guessPath doesn't work: it returns first module path
+      val baseDir = project.stateStore.projectBasePath
       return PyExternalSystemProjectAware(project, baseDir)
     }
-
-    @Suppress("DialogTitleCapitalization") //pyproject.toml can't be capitalized
-    private val SYSTEM_ID = ProjectSystemId("pyproject.toml", PyProjectTomlBundle.message("intellij.python.pyproject.system.name"))
   }
 }
 
@@ -82,5 +125,5 @@ internal class PyExternalSystemProjectAware private constructor(
 private val PROJECT_AWARE_TOPIC: Topic<ExternalSystemProjectListener> =
   Topic(ExternalSystemProjectListener::class.java, Topic.BroadcastDirection.NONE)
 
-@Topic.ProjectLevel
-private val MODEL_REBUILD: Topic<ModelRebuiltListener> = Topic(ModelRebuiltListener::class.java, Topic.BroadcastDirection.NONE)
+
+private val log = fileLogger()

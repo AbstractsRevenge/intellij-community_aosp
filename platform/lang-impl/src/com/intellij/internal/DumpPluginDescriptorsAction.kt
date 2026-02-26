@@ -8,8 +8,14 @@ import com.fasterxml.jackson.core.JsonGenerator
 import com.fasterxml.jackson.core.util.DefaultIndenter
 import com.fasterxml.jackson.core.util.DefaultPrettyPrinter
 import com.intellij.ide.ApplicationActivity
-import com.intellij.ide.plugins.*
+import com.intellij.ide.plugins.ClassLoaderConfigurator
+import com.intellij.ide.plugins.IdeaPluginDescriptor
+import com.intellij.ide.plugins.IdeaPluginDescriptorImpl
+import com.intellij.ide.plugins.PluginManager
+import com.intellij.ide.plugins.PluginManagerCore
 import com.intellij.ide.plugins.cl.PluginClassLoader
+import com.intellij.ide.plugins.contentModuleName
+import com.intellij.ide.plugins.contentModules
 import com.intellij.internal.PluginDescriptionDumper.Companion.getDumpFileLocation
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.remoting.ActionRemoteBehaviorSpecification
@@ -37,13 +43,13 @@ import kotlin.io.path.relativeTo
 
 private const val DUMP_DESCRIPTORS_PROPERTY = "idea.dump.plugin.descriptors"
 
-private class DumpPluginDescriptorsAction : DumbAwareAction(), ActionRemoteBehaviorSpecification.Duplicated {
+internal class DumpPluginDescriptorsAction : DumbAwareAction(), ActionRemoteBehaviorSpecification.Duplicated {
   override fun actionPerformed(e: AnActionEvent) {
     service<PluginDescriptionDumper>().dump(getDumpFileLocation(), e.project)
   }
 }
 
-private class DumpPluginDescriptorsOnAppStartTrigger : ApplicationActivity {
+internal class DumpPluginDescriptorsOnAppStartTrigger : ApplicationActivity {
   override suspend fun execute() {
     if (System.getProperty(DUMP_DESCRIPTORS_PROPERTY, "false") == "true") {
       val dumpPath = getDumpFileLocation()

@@ -15,4 +15,14 @@ jvm_library(
   exports = ["@lib//:jackson"],
   runtime_deps = ["@lib//:jackson"]
 )
+
+jvm_library(
+  name = "jackson_test_lib",
+  module_name = "intellij.libraries.jackson",
+  visibility = ["//visibility:public"],
+  srcs = glob([], allow_empty = True),
+  kotlinc_opts = "@community//:k8",
+  exports = ["@lib//:jackson"],
+  runtime_deps = [":jackson"]
+)
 ### auto-generated section `build intellij.libraries.jackson` end

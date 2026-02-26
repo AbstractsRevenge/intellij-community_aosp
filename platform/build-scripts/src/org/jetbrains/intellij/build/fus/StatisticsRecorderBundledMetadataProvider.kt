@@ -9,10 +9,10 @@ import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.databind.MapperFeature
 import com.fasterxml.jackson.databind.SerializationFeature
 import com.fasterxml.jackson.databind.json.JsonMapper
-import com.jetbrains.fus.reporting.configuration.ConfigurationClientFactory
-import com.jetbrains.fus.reporting.configuration.ConfigurationClient
 import com.google.gson.JsonParser
 import com.jetbrains.fus.reporting.FusJsonSerializer
+import com.jetbrains.fus.reporting.configuration.ConfigurationClient
+import com.jetbrains.fus.reporting.configuration.ConfigurationClientFactory
 import com.jetbrains.fus.reporting.model.serialization.SerializationException
 import io.opentelemetry.api.common.AttributeKey
 import io.opentelemetry.api.common.Attributes
@@ -147,7 +147,7 @@ private suspend fun serviceUri(featureUsageStatisticsProperties: FeatureUsageSta
 
 private suspend fun metadataServiceUri(featureUsageStatisticsProperties: FeatureUsageStatisticsProperties, context: BuildContext): String {
   val appInfo = context.applicationInfo
-  val metadataVersion = (appInfo.majorVersion.substring(2,4) + appInfo.minorVersion).toInt()
+  val metadataVersion = (appInfo.majorVersion.substring(2,4) + appInfo.minorVersionMainPart).toInt()
   return serviceUri(featureUsageStatisticsProperties, context).provideMetadataProductUrl(metadataVersion)!!
 }
 

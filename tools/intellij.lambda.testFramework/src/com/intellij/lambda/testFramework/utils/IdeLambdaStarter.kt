@@ -9,17 +9,24 @@ import com.intellij.ide.starter.project.NoProject
 import com.intellij.ide.starter.runner.IDERunContext
 import com.intellij.ide.starter.runner.events.IdeAfterLaunchEvent
 import com.intellij.lambda.testFramework.testApi.waitForProject
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.remoteDev.tests.LambdaTestsConstants
 import com.intellij.remoteDev.tests.impl.LambdaTestHost.Companion.TEST_MODULE_ID_PROPERTY_NAME
 import com.intellij.remoteDev.tests.modelGenerated.LambdaRdIdeType
-import com.intellij.remoteDev.tests.modelGenerated.LambdaRdIdeType.*
+import com.intellij.remoteDev.tests.modelGenerated.LambdaRdIdeType.BACKEND
+import com.intellij.remoteDev.tests.modelGenerated.LambdaRdIdeType.FRONTEND
+import com.intellij.remoteDev.tests.modelGenerated.LambdaRdIdeType.MONOLITH
 import com.intellij.remoteDev.tests.modelGenerated.LambdaRdTestSession
 import com.intellij.remoteDev.tests.modelGenerated.lambdaTestModel
 import com.intellij.remoteDev.util.executeSyncNonNullable
 import com.intellij.tools.ide.starter.bus.EventsBus
 import com.intellij.util.io.copyRecursively
 import com.intellij.util.io.createDirectories
-import com.jetbrains.rd.framework.*
+import com.jetbrains.rd.framework.IdKind
+import com.jetbrains.rd.framework.Identities
+import com.jetbrains.rd.framework.Protocol
+import com.jetbrains.rd.framework.Serializers
+import com.jetbrains.rd.framework.SocketWire
 import com.jetbrains.rd.util.lifetime.EternalLifetime
 import com.jetbrains.rd.util.threading.SynchronousScheduler
 import kotlinx.coroutines.runBlocking
@@ -79,22 +86,22 @@ internal fun IDERemDevTestContext.runIdeWithLambda(
                                                     expectedExitCode,
                                                     collectNativeThreads,
                                                     configure)
-  listOf(backendRdSession, frontendRdSession).forEach { it.awaitSessionReady() }
+  listOf(backendRdSession, frontendRdSession)
+    .forEach { it.awaitSessionReady(if (this.frontendIDEContext.ide.vmOptions.hasHeadlessMode()) 15.seconds else 30.seconds) }
   return IdeWithLambda(backgroundRun, rdSession = frontendRdSession, backendRdSession = backendRdSession).also {
     if (testCase.projectInfo != NoProject) {
       @Suppress("RAW_RUN_BLOCKING")
       runBlocking {
         it.runInFrontend("Wait for the project") {
-          waitForProject(20.seconds)
+          waitForProject(if (!ApplicationManager.getApplication().isHeadlessEnvironment) 30.seconds else 20.seconds)
         }
       }
     }
   }
 }
 
-private fun LambdaRdTestSession.awaitSessionReady() {
+private fun LambdaRdTestSession.awaitSessionReady(timeout: Duration = 15.seconds) {
   val timeStarted = System.currentTimeMillis()
-  val timeout = 15.seconds
   while (ready.value != true && timeStarted + timeout.inWholeMilliseconds > System.currentTimeMillis()) {
     Thread.sleep(500)
   }

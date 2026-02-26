@@ -1,4 +1,4 @@
-// Copyright 2000-2025 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
+// Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package com.intellij.platform.searchEverywhere.backend.impl
 
 import com.intellij.find.findUsages.PsiElement2UsageTargetAdapter
@@ -25,11 +25,19 @@ import com.intellij.platform.searchEverywhere.providers.SeProvidersHolder
 import com.intellij.psi.PsiElement
 import com.intellij.psi.util.PsiUtilCore
 import com.intellij.usageView.UsageInfo
-import com.intellij.usageView.UsageViewBundle
-import com.intellij.usages.*
+import com.intellij.usages.Usage
+import com.intellij.usages.UsageInfo2UsageAdapter
+import com.intellij.usages.UsageLimitUtil
+import com.intellij.usages.UsageTarget
+import com.intellij.usages.UsageViewManager
+import com.intellij.usages.UsageViewPresentation
 import com.intellij.usages.impl.UsageViewManagerImpl
 import com.intellij.util.containers.toArray
-import kotlinx.coroutines.*
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
 import org.jetbrains.annotations.ApiStatus
 
 @ApiStatus.Internal
@@ -87,13 +95,8 @@ class SeFindToolWindowManager(private val project: Project) {
             }
 
             tooManyUsagesStatus.pauseProcessingIfTooManyUsages()
-            if (usages.size + targets.size >= UsageLimitUtil.USAGES_LIMIT && tooManyUsagesStatus.switchTooManyUsagesStatus()) {
-              UsageViewManagerImpl.showTooManyUsagesWarningLater(project,
-                                                                 tooManyUsagesStatus,
-                                                                 indicator,
-                                                                 null,
-                                                                 { UsageViewBundle.message("find.excessive.usage.count.prompt") },
-                                                                 null)
+            if (usages.size + targets.size >= UsageLimitUtil.getSearchResultLimit() && tooManyUsagesStatus.switchTooManyUsagesStatus()) {
+              UsageViewManagerImpl.showTooManyUsagesWarningLater(project, tooManyUsagesStatus, indicator, null, null, null)
             }
           }
         }

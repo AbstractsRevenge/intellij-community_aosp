@@ -45,6 +45,7 @@
     <module name="intellij.platform.lang.core"/>
     <module name="intellij.platform.projectModel"/>
     <module name="intellij.platform.projectModel.impl"/>
+    <module name="intellij.platform.welcomeScreen.impl"/>
   </dependencies>
   <!-- endregion -->
 
@@ -61,5 +62,25 @@
       implementation="com.intellij.ide.projectView.impl.canBeSelected.ArchiveCanBeSelectedInProjectPaneProvider"/>
     <canBeSelectedInProjectPaneProvider
       implementation="com.intellij.ide.projectView.impl.canBeSelected.ScratchCanBeSelectedInProjectPaneProvider"/>
+
+    <completion.frontendFriendlyPrefixMatcher target="com.intellij.codeInsight.completion.command.LimitedToleranceMatcher"
+                                              converter="com.intellij.codeInsight.completion.command.LimitedToleranceMatcher$Converter"
+                                              descriptor="com.intellij.codeInsight.completion.command.LimitedToleranceMatcher$Descriptor"/>
+
+    <completion.frontendFriendlyPrefixMatcher target="com.intellij.codeInsight.completion.impl.BetterPrefixMatcher"
+                                              converter="com.intellij.codeInsight.completion.impl.BetterPrefixMatcher$Converter"
+                                              descriptor="com.intellij.codeInsight.completion.impl.BetterPrefixMatcher$Descriptor"/>
+
+    <completion.frontendFriendlyPrefixMatcher target="com.intellij.codeInsight.completion.impl.BetterPrefixMatcher$AutoRestarting"
+                                              converter="com.intellij.codeInsight.completion.impl.BetterPrefixMatcher$AutoRestarting$Converter"
+                                              descriptor="com.intellij.codeInsight.completion.impl.BetterPrefixMatcher$AutoRestarting$Descriptor"/>
+
+    <applicationService serviceImplementation="com.intellij.codeInsight.completion.command.configuration.ApplicationCommandCompletionService"/>
+    <applicationSettings service="com.intellij.codeInsight.completion.command.configuration.ApplicationCommandCompletionService"/>
+    <vetoRenameCondition implementation="com.intellij.openapi.paths.WebReferenceVetoRenameCondition"/>
+
+
+    <registryKey key="frontend.structure.popup" defaultValue="false"
+                 description="Enables frontend side file structure popup" />
   </extensions>
 </idea-plugin>

@@ -77,5 +77,7 @@
     <module name="intellij.libraries.velocity" loading="embedded"/>
     <module name="intellij.libraries.xtext.xbase" loading="embedded"/>
     <module name="intellij.libraries.xz" loading="embedded"/>
+    <module name="intellij.libraries.opentelemetry.sdk.autoconfigure.spi" loading="embedded"/>
+    <module name="intellij.libraries.opentelemetry.exporter.sender.jdk" loading="embedded"/>
   </content>
 </idea-plugin>

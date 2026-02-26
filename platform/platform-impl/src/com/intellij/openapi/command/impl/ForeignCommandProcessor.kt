@@ -1,49 +1,78 @@
-// Copyright 2000-2025 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
+// Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package com.intellij.openapi.command.impl
 
-import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.command.CommandProcessor
 import com.intellij.openapi.command.CommandProcessorEx
 import com.intellij.openapi.command.impl.cmd.CmdEvent
+import com.intellij.openapi.command.impl.cmd.CmdIdService
+import com.intellij.openapi.command.undo.UndoManager
 import com.intellij.openapi.components.service
-import com.intellij.serviceContainer.AlreadyDisposedException
+import com.intellij.openapi.project.Project
 import com.intellij.util.concurrency.ThreadingAssertions
 import org.jetbrains.annotations.ApiStatus
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
 
-@ApiStatus.Experimental
 @ApiStatus.Internal
 class ForeignCommandProcessor {
-
   private val currentCommand = AtomicReference<CmdEvent>()
   private val tokenToFinish = AtomicReference<AutoCloseable>()
+  private val isUndoDisabled = AtomicBoolean()
+
+  fun isUndoDisabled(): Boolean {
+    return isUndoDisabled.get()
+  }
+
+  fun setUndoDisabled(value: Boolean) {
+    isUndoDisabled.set(value)
+  }
 
   fun currentCommand(): CmdEvent? {
     return currentCommand.get()
   }
 
-  fun startCommand(cmdEvent: CmdEvent) {
-    assertStartAllowed(cmdEvent)
-    currentCommand.set(cmdEvent)
-    val token = if (cmdEvent.isTransparent()) {
+  fun startCommand(cmdStartEvent: CmdEvent) {
+    assertStartAllowed(cmdStartEvent)
+    CmdIdService.getInstance().register(cmdStartEvent.id())
+    currentCommand.set(cmdStartEvent)
+    val token = if (cmdStartEvent.isTransparent()) {
       startPlatformTransparent()
     } else {
-      startPlatformCommand(cmdEvent)
+      startPlatformCommand(cmdStartEvent)
     }
     tokenToFinish.set(token)
   }
 
-  fun finishCommand() {
+  fun finishCommand(cmdFinishEvent: CmdEvent) {
     assertFinishAllowed()
     val token = tokenToFinish.getAndSet(null)
     try {
-      checkNotNull(token) {
-        "unexpected state: no token to finish"
+      if (token == null) {
+        throw ForeignCommandException("unexpected state: no command token to finish")
       }
+      applyCmdMeta(cmdFinishEvent)
+      currentCommand.set(cmdFinishEvent)
       token.close()
     } finally {
       currentCommand.set(null)
+    }
+  }
+
+  private fun applyCmdMeta(cmdFinishEvent: CmdEvent) {
+    for (undoMeta in cmdFinishEvent.meta().undoMeta()) {
+      val undoProject = undoMeta.undoProject()
+      val undoManager = undoManager(undoProject)
+      for (actionMeta in undoMeta.undoableActions()) {
+        val actionType = actionMeta.type()
+        val affectedDocuments = actionMeta.affectedDocuments()
+        val isGlobal = actionMeta.isGlobal()
+        val undoableAction = UndoableActionType.getAction(actionType, affectedDocuments, isGlobal)
+        undoManager.undoableActionPerformed(undoableAction)
+      }
+      if (undoMeta.isForcedGlobal()) {
+        undoManager.markCurrentCommandAsGlobal()
+      }
     }
   }
 
@@ -57,7 +86,10 @@ class ForeignCommandProcessor {
     )
     if (commandToken == null) {
       currentCommand.set(null)
-      error("failed to start foreign command with platform CommandProcessor")
+      throw ForeignCommandException(
+        "failed to start foreign command with platform CommandProcessor, " +
+        "probably domestic command is already in progress ${commandProcessor.currentCommand}"
+      )
     }
     return AutoCloseable {
       commandProcessor.finishCommand(commandToken, null)
@@ -72,25 +104,36 @@ class ForeignCommandProcessor {
     ThreadingAssertions.assertEventDispatchThread()
     val project = cmdEvent.project()
     if (project != null && project.isDisposed()) {
-      throw AlreadyDisposedException("cannot perform command in disposed project: $project")
+      throw ForeignCommandException("cannot perform command in disposed project: $project")
     }
-    require(currentCommand() == null) {
-      "cannot perform foreign command during another foreign command"
+    if (currentCommand() != null) {
+      throw ForeignCommandException(
+        "cannot perform foreign command during another foreign command ${currentCommand()}"
+      )
     }
     val commandProcessor = commandProcessor()
-    require(!commandProcessor.isCommandInProgress) {
-      "cannot perform foreign command during domestic command"
+    if (commandProcessor.isCommandInProgress) {
+      throw ForeignCommandException("cannot perform foreign command during domestic command ${commandProcessor.currentCommand}")
     }
-    require(!commandProcessor.isUndoTransparentActionInProgress()) {
-      "cannot perform foreign command during domestic transparent action"
+    if (commandProcessor.isUndoTransparentActionInProgress()) {
+      throw ForeignCommandException("cannot perform foreign command during domestic transparent action")
     }
   }
 
   private fun assertFinishAllowed() {
     ThreadingAssertions.assertEventDispatchThread()
-    requireNotNull(currentCommand()) {
-      "cannot finish foreign command without starting it"
+    if (currentCommand() == null) {
+      throw ForeignCommandException("cannot finish foreign command without starting it")
     }
+  }
+
+  private fun undoManager(project: Project?): UndoManagerImpl {
+    val undoManager = if (project == null) {
+      UndoManager.getGlobalInstance()
+    } else {
+      UndoManager.getInstance(project)
+    }
+    return undoManager as UndoManagerImpl
   }
 
   private fun commandProcessor(): CommandProcessorEx {
@@ -99,9 +142,8 @@ class ForeignCommandProcessor {
 
   companion object {
     @JvmStatic
-    fun getInstance(): ForeignCommandProcessor {
-      val application = ApplicationManager.getApplication()
-      return application.service()
-    }
+    fun getInstance(): ForeignCommandProcessor = service()
   }
 }
+
+private class ForeignCommandException(message: String) : RuntimeException(message)

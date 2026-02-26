@@ -1,4 +1,4 @@
-// Copyright 2000-2025 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
+// Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package com.intellij.openapi.progress.util
 
 import com.intellij.CommonBundle
@@ -15,25 +15,19 @@ import com.intellij.openapi.application.impl.InternalThreading
 import com.intellij.openapi.application.rw.PlatformReadWriteActionSupport
 import com.intellij.openapi.components.serviceIfCreated
 import com.intellij.openapi.diagnostic.logger
-import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.progress.util.ui.NiceOverlayUi
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.util.registry.Registry
-import com.intellij.platform.locking.impl.getGlobalThreadingSupport
 import com.intellij.ui.KeyStrokeAdapter
 import com.intellij.ui.scale.JBUIScale
 import com.intellij.util.application
-import com.intellij.util.io.blockingDispatcher
-import com.intellij.util.ui.AsyncProcessIcon
-import com.intellij.util.ui.EDT
 import com.intellij.util.ui.GraphicsUtil
-import kotlinx.coroutines.*
-import kotlinx.coroutines.future.asCompletableFuture
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.InternalCoroutinesApi
 import org.jetbrains.annotations.ApiStatus
 import org.jetbrains.annotations.Nls
 import java.awt.AWTEvent
 import java.awt.Component
-import java.awt.EventQueue
 import java.awt.KeyboardFocusManager
 import java.awt.event.KeyEvent
 import java.awt.event.MouseEvent
@@ -41,10 +35,8 @@ import java.nio.file.Files
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
-import javax.swing.JFrame
 import javax.swing.JRootPane
 import javax.swing.SwingUtilities
-import kotlin.time.Duration.Companion.seconds
 
 /**
  * The IDE needs to run certain AWT events as soon as possible.
@@ -115,6 +107,7 @@ object SuvorovProgress {
     if (Thread.holdsLock(awtComponentLock)) {
       val application = ApplicationManager.getApplication()
       val rwService = application.serviceIfCreated<ReadWriteActionSupport>()
+      @Suppress("TestOnlyProblems")
       if (rwService is PlatformReadWriteActionSupport) {
         rwService.signalWriteActionNeedsToBeRetried()
       }
@@ -146,24 +139,23 @@ object SuvorovProgress {
     }
     when (value) {
       "None" -> processInvocationEventsWithoutDialog(awaitedValue, Int.MAX_VALUE)
-      "Spinning" -> if (Registry.`is`("editor.allow.raw.access.on.edt")) {
-        showSpinningProgress(awaitedValue)
-      }
-      else {
-        thisLogger().warn("Spinning progress would not work without enabled registry value `editor.allow.raw.access.on.edt`")
-        processInvocationEventsWithoutDialog(awaitedValue, Int.MAX_VALUE)
-      }
       "NiceOverlay" -> {
-        val currentFocusedPane = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusedWindow?.let(SwingUtilities::getRootPane)
-        // IJPL-203107 in remote development, there is no graphics for a component
-        if (currentFocusedPane == null || GraphicsUtil.safelyGetGraphics(currentFocusedPane) == null) {
-          // can happen also in tests
+        try {
+          val currentFocusedPane = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusedWindow?.let(SwingUtilities::getRootPane)
+          // IJPL-203107 in remote development, there is no graphics for a component
+          if (currentFocusedPane == null || GraphicsUtil.safelyGetGraphics(currentFocusedPane) == null) {
+            // can happen also in tests
+            processInvocationEventsWithoutDialog(awaitedValue, Int.MAX_VALUE)
+          }
+          else if (title.get() != null) {
+            showPotemkinProgress(awaitedValue, true)
+          } else {
+            showNiceOverlay(awaitedValue, currentFocusedPane)
+          }
+        } catch (e: Throwable) {
+          logErrorReliably(e)
+          // we still must wait for deferred with the processing of transferred events.
           processInvocationEventsWithoutDialog(awaitedValue, Int.MAX_VALUE)
-        }
-        else if (title.get() != null) {
-          showPotemkinProgress(awaitedValue, true)
-        } else {
-          showNiceOverlay(awaitedValue, currentFocusedPane)
         }
       }
       "Bar", "Overlay" -> showPotemkinProgress(awaitedValue, isBar = value == "Bar")
@@ -220,6 +212,7 @@ object SuvorovProgress {
           niceOverlay.redrawMainComponent()
         }
         stealer.dispatchEvents(0)
+        processAllExistingEventsInEternalStealer()
         stealer.waitForPing(10)
       }
     }
@@ -230,86 +223,42 @@ object SuvorovProgress {
     }
   }
 
-  fun logErrorIfTooLong(): AutoCloseable {
-    val loggingJob = deadlockLoggingJob(stealer, eternalStealer)
-    return AutoCloseable { loggingJob.cancel() }
-  }
-
-  @OptIn(DelicateCoroutinesApi::class)
-  private fun deadlockLoggingJob(stealer: EventStealer?, eternalStealer: EternalEventStealer): Job = GlobalScope.launch(blockingDispatcher) {
-    delay(5.seconds)
-    val stealerInfo = stealer?.dumpDebugInfo() ?: "No EventStealer"
-    val eternalStealerInfo = eternalStealer.dumpDebugInfo()
-    val ideEventQueueInfo = with (IdeEventQueue.getInstance()) {
-      buildString {
-        appendLine("IdeEventQueueInfo")
-        appendLine("- trueCurrentEvent = $trueCurrentEvent")
-        appendLine("- dispatchers = ${IdeEventQueue::class.java.getDeclaredField("dispatchers").also { it.setAccessible(true) }.get(this@with)}")
-        appendLine("- nonLockingDispatchers = ${IdeEventQueue::class.java.getDeclaredField("nonLockingDispatchers").also { it.setAccessible(true) }.get(this@with)}")
-        appendLine("- postEventListeners = ${IdeEventQueue::class.java.getDeclaredField("postEventListeners").also { it.setAccessible(true) }.get(this@with)}")
-        val queues = EventQueue::class.java.getDeclaredField("queues").also { it.setAccessible(true) }.get(this@with) as Array<*>
-        queues.forEachIndexed { index, queue ->
-          var head = queue?.javaClass?.getDeclaredField("head")?.also { it.setAccessible(true) }?.get(queue)
-          val tail = queue?.javaClass?.getDeclaredField("tail")?.also { it.setAccessible(true) }?.get(queue)
-          append("- queue#$index ($queue):")
-          if (head == null) {
-            appendLine()
-            return@forEachIndexed
-          }
-          val eventField = head.javaClass.getDeclaredField("event").also { it.setAccessible(true) }
-          val nextField = head.javaClass.getDeclaredField("next").also { it.setAccessible(true) }
-          while (head != null && head != tail) {
-            append(eventField.get(head))
-            append(", ")
-            head = nextField.get(head)
-          }
-          appendLine()
-        }
-      }
-    }
-
-    val edtTrace = "EDT stacktrace:\n" + EDT.getEventDispatchThread().stackTrace.joinToString("\n")
-    logger<SuvorovProgress>().error("Probable deadlock detected in SuvorovProgress:\n$stealerInfo\n$eternalStealerInfo\n$ideEventQueueInfo\n$edtTrace", Throwable())
-  }
-
   private fun showPotemkinProgress(awaitedValue: Deferred<*>, isBar: Boolean) {
-    // some focus machinery may require Write-Intent read action
-    // we need to remove it from there
-    getGlobalThreadingSupport().relaxPreventiveLockingActions {
-      @Suppress("HardCodedStringLiteral") val title = this.title.get()
-      val progress = if (title != null || isBar) {
-        PotemkinProgress(title ?: CommonBundle.message("title.long.non.interactive.progress"), null, null, null)
-      }
-      else {
-        val window = SwingUtilities.getRootPane(KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner)
-        PotemkinOverlayProgress(window, false)
-      }.apply {
-        setDelayInMillis(0)
-        repostAllEvents()
-      }
-      progress.start()
-      try {
-        do {
-          if (progress is PotemkinProgress) {
-            progress.dispatchAllInvocationEvents()
-          } else if (progress is PotemkinOverlayProgress) {
-            progress.dispatchAllInvocationEvents()
-          }
-          progress.interact()
-          sleep() // avoid touching the progress too much
-        }
-        while (!awaitedValue.isCompleted)
-      }
-      finally {
-        // we cannot acquire WI on closing
+    @Suppress("HardCodedStringLiteral") val title = this.title.get()
+    val progress = if (title != null || isBar) {
+      PotemkinProgress(title ?: CommonBundle.message("title.long.non.interactive.progress"), null, null, null)
+    }
+    else {
+      val window = SwingUtilities.getRootPane(KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner)
+      PotemkinOverlayProgress(window, false)
+    }.apply {
+      setDelayInMillis(0)
+      repostAllEvents()
+    }
+    progress.start()
+    try {
+      do {
         if (progress is PotemkinProgress) {
-          progress.dialog.getPopup()?.setShouldUseWriteIntentReadAction(false)
-          progress.progressFinished()
-          progress.processFinish()
-          Disposer.dispose(progress)
+          progress.dispatchAllInvocationEvents()
         }
-        progress.stop()
+        else if (progress is PotemkinOverlayProgress) {
+          progress.dispatchAllInvocationEvents()
+        }
+        progress.interact()
+        processAllExistingEventsInEternalStealer()
+        sleep() // avoid touching the progress too much
       }
+      while (!awaitedValue.isCompleted)
+    }
+    finally {
+      // we cannot acquire WI on closing
+      if (progress is PotemkinProgress) {
+        progress.dialog.getPopup()?.setShouldUseWriteIntentReadAction(false)
+        progress.progressFinished()
+        progress.processFinish()
+        Disposer.dispose(progress)
+      }
+      progress.stop()
     }
   }
 
@@ -318,66 +267,14 @@ object SuvorovProgress {
     eternalStealer.dispatchAllEventsForTimeout(showingDelay.toLong(), awaitedValue)
   }
 
-  private fun showSpinningProgress(awaitedValue: Deferred<*>) {
-    getGlobalThreadingSupport().relaxPreventiveLockingActions {
-
-      val icon = AsyncProcessIcon.createBig("Suvorov progress")
-      val window = SwingUtilities.getRootPane(KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner)
-
-      if (window == null) {
-        awaitedValue.asCompletableFuture().join()
-        return@relaxPreventiveLockingActions
-      }
-
-      icon.size = icon.preferredSize
-      icon.isVisible = true
-
-      val disposer = Disposer.newDisposable()
-      val stealer = PotemkinProgress.startStealingInputEvents({ event ->
-                                                                val source = event.source
-                                                                // we want to permit resizing and moving the IDE window
-                                                                if (source is JFrame) {
-                                                                  source.dispatchEvent(event)
-                                                                }
-                                                              }, disposer)
-      repostAllEvents()
-
-      val host = window.layeredPane
-      host.add(icon)
-      // Swing tries its best to not draw anything that may not be on screen.
-      // We need to trick it to mandatory drawing, and for this reason we make the host components opaque.
-      val oldHostVisibile = host.isVisible
-      val oldHostOpaque = host.isOpaque
-      host.isVisible = true
-      host.isOpaque = true
-
-      icon.updateUI()
-      icon.setBounds((window.width - icon.width) / 2, (window.height - icon.height) / 2, icon.width, icon.height)
-      icon.resume()
-
-      try {
-        do {
-          icon.validate()
-          icon.tickAnimation()
-
-          stealer.dispatchEvents(0)
-          sleep() // avoid touching the progress too much
-        }
-        while (!awaitedValue.isCompleted)
-      }
-      finally {
-        icon.suspend()
-        host.isVisible = oldHostVisibile
-        host.isOpaque = oldHostOpaque
-        icon.isVisible = false
-        Disposer.dispose(disposer)
-        host.remove(icon)
-      }
-    }
-  }
-
   private fun sleep() {
     Thread.sleep(0, 100_000)
+  }
+
+  private fun processAllExistingEventsInEternalStealer() {
+    @Suppress("ControlFlowWithEmptyBody")
+    while (eternalStealer.dispatchExistingEvent(0, null) != EternalEventStealer.DispatchResult.NO_EVENT_PROCESSED) {
+    }
   }
 }
 
@@ -402,11 +299,6 @@ private class EternalEventStealer(disposable: Disposable) {
       }, disposable)
   }
 
-  fun dumpDebugInfo(): String {
-    val events = specialEvents.map { event -> event.toString() }
-    return "EternalEventStealer: ${specialEvents.size} events " + if (events.isEmpty()) "" else "($events)"
-  }
-
   fun dispatchAllEventsForTimeout(timeoutMillis: Long, deferred: Deferred<*>) {
     val initialMark = System.nanoTime()
 
@@ -425,24 +317,58 @@ private class EternalEventStealer(disposable: Disposable) {
       if (deferred.isCompleted) {
         return
       }
-      try {
-        when (val event = specialEvents.poll() ?: specialEvents.poll(toSleep, TimeUnit.MILLISECONDS)) {
-          is TerminalEvent -> {
-            // return only if we get the event for the right id
-            if (event.id == id) {
-              return
-            }
-          }
-          is TransferredWriteActionWrapper -> getGlobalThreadingSupport().relaxPreventiveLockingActions {
-            event.event.execute()
-          }
-          null -> Unit
-        }
-      } catch (_ : InterruptedException) {
-        // we still return locking result regardless of interruption
-        Thread.currentThread().interrupt()
+      val dispatchResult = dispatchExistingEvent(toSleep, id)
+      if (dispatchResult == DispatchResult.CAN_RETURN) {
+        return
       }
     }
+  }
+
+  enum class DispatchResult {
+    EVENT_PROCESSED, CAN_RETURN, NO_EVENT_PROCESSED
+  }
+
+  /**
+   * This function is a workaround to a very tricky problem where some events do not reach the EventQueue (IJPL-223355),
+   * resulting in a deadlock because EDT cannot progress without these events.
+   * According to the logs, these events reach [com.intellij.openapi.progress.util.EternalEventStealer],
+   * so we are able to introspect the eternal stealer and execute these events.
+   */
+  fun dispatchExistingEvent(timeoutMillis: Long, terminalId: Int?): DispatchResult {
+    try {
+      return when (val event = specialEvents.poll() ?: specialEvents.poll(timeoutMillis, TimeUnit.MILLISECONDS)) {
+        is TerminalEvent -> {
+          // return only if we get the event for the right id
+          if (event.id == terminalId) {
+            DispatchResult.CAN_RETURN
+          } else {
+            DispatchResult.EVENT_PROCESSED
+          }
+        }
+        is TransferredWriteActionWrapper -> try {
+          event.event.execute()
+          DispatchResult.EVENT_PROCESSED
+        } catch (e: Throwable) {
+          logErrorReliably(e)
+          DispatchResult.EVENT_PROCESSED
+        }
+        null -> {
+          DispatchResult.NO_EVENT_PROCESSED
+        }
+      }
+    } catch (_ : InterruptedException) {
+      // we still return locking result regardless of interruption
+      Thread.currentThread().interrupt()
+      return DispatchResult.EVENT_PROCESSED
+    }
+  }
+}
+
+private fun logErrorReliably(e: Throwable) {
+  try {
+    logger<SuvorovProgress>().error(e)
+  } catch (_ : Throwable) {
+    // protection against rethrowing by logger
   }
 }
 

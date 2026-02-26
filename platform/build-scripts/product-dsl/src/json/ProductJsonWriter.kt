@@ -3,13 +3,24 @@ package org.jetbrains.intellij.build.productLayout.json
 
 import com.fasterxml.jackson.core.JsonGenerator
 import org.jetbrains.intellij.build.productLayout.CompositionType
-import org.jetbrains.intellij.build.productLayout.analysis.ProductSpec
+import org.jetbrains.intellij.build.productLayout.tooling.ProductSpec
 
 /**
  * Writes a single product to JSON using kotlinx.serialization.
  */
 internal fun writeProduct(gen: JsonGenerator, product: ProductSpec) {
   gen.writeRawValue(kotlinxJson.encodeToString(product))
+}
+
+/**
+ * Writes a name-indexed map of products for O(1) lookup on the client side.
+ */
+internal fun writeProductIndex(gen: JsonGenerator, products: List<ProductSpec>) {
+  val entries = LinkedHashMap<String, ProductSpec>()
+  for (product in products.sortedBy { it.name }) {
+    entries[product.name] = product
+  }
+  gen.writeRawValue(kotlinxJson.encodeToString(entries))
 }
 
 /**

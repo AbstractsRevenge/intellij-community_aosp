@@ -5,55 +5,102 @@ import com.intellij.application.options.CodeStyle;
 import com.intellij.codeInsight.ExpectedTypeInfo;
 import com.intellij.codeInsight.JavaTailTypes;
 import com.intellij.codeInsight.ModNavigatorTailType;
-import com.intellij.codeInsight.completion.*;
+import com.intellij.codeInsight.completion.CheckInitialized;
+import com.intellij.codeInsight.completion.CompletionUtil;
+import com.intellij.codeInsight.completion.JavaClassNameCompletionContributor;
+import com.intellij.codeInsight.completion.JavaCompletionContributor;
+import com.intellij.codeInsight.completion.JavaCompletionUtil;
+import com.intellij.codeInsight.completion.JavaFrontendCompletionUtil;
+import com.intellij.codeInsight.completion.JavaMemberNameCompletionContributor;
+import com.intellij.codeInsight.completion.JavaPsiClassReferenceElement;
+import com.intellij.codeInsight.completion.JavaSmartCompletionContributor;
+import com.intellij.codeInsight.completion.ReferenceExpressionCompletionContributor;
 import com.intellij.codeInsight.completion.scope.CompletionElement;
 import com.intellij.codeInsight.completion.scope.JavaCompletionProcessor;
 import com.intellij.codeInsight.guess.GuessManager;
 import com.intellij.codeInsight.lookup.LookupElement;
 import com.intellij.java.syntax.parser.JavaKeywords;
-import com.intellij.lang.Language;
+import com.intellij.lang.java.JavaLanguage;
 import com.intellij.modcommand.ActionContext;
 import com.intellij.modcommand.ModCommand;
 import com.intellij.modcommand.ModCommandExecutor;
+import com.intellij.modcommand.ModLaunchEditorAction;
+import com.intellij.modcompletion.CommonCompletionItem;
 import com.intellij.modcompletion.ModCompletionItem;
 import com.intellij.modcompletion.ModCompletionItemPresentation;
-import com.intellij.modcompletion.ModCompletionItemProvider;
+import com.intellij.modcompletion.ModCompletionResult;
 import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.util.Condition;
 import com.intellij.openapi.util.Iconable;
+import com.intellij.openapi.util.Predicates;
 import com.intellij.openapi.util.TextRange;
 import com.intellij.openapi.util.text.MarkupText;
 import com.intellij.openapi.util.text.StringUtil;
 import com.intellij.patterns.ElementPattern;
-import com.intellij.psi.*;
+import com.intellij.psi.JavaPsiFacade;
+import com.intellij.psi.PsiArrayType;
+import com.intellij.psi.PsiClass;
+import com.intellij.psi.PsiDocumentManager;
+import com.intellij.psi.PsiElement;
+import com.intellij.psi.PsiEnumConstant;
+import com.intellij.psi.PsiExpression;
+import com.intellij.psi.PsiFile;
+import com.intellij.psi.PsiImportStatementBase;
+import com.intellij.psi.PsiImportStaticStatement;
+import com.intellij.psi.PsiIntersectionType;
+import com.intellij.psi.PsiJavaCodeReferenceCodeFragment;
+import com.intellij.psi.PsiJavaCodeReferenceElement;
+import com.intellij.psi.PsiJavaFile;
+import com.intellij.psi.PsiJavaReference;
+import com.intellij.psi.PsiLocalVariable;
+import com.intellij.psi.PsiMember;
+import com.intellij.psi.PsiMethod;
+import com.intellij.psi.PsiMethodReferenceExpression;
+import com.intellij.psi.PsiNewExpression;
+import com.intellij.psi.PsiPackage;
+import com.intellij.psi.PsiPackageAccessibilityStatement;
+import com.intellij.psi.PsiPackageStatement;
+import com.intellij.psi.PsiParenthesizedExpression;
+import com.intellij.psi.PsiReferenceExpression;
+import com.intellij.psi.PsiSubstitutor;
+import com.intellij.psi.PsiSwitchBlock;
+import com.intellij.psi.PsiType;
+import com.intellij.psi.PsiTypeCastExpression;
+import com.intellij.psi.PsiVariable;
+import com.intellij.psi.ResolveState;
 import com.intellij.psi.codeStyle.CommonCodeStyleSettings;
 import com.intellij.psi.filters.AndFilter;
 import com.intellij.psi.filters.ElementExtractorFilter;
 import com.intellij.psi.filters.ElementFilter;
 import com.intellij.psi.filters.TrueFilter;
-import com.intellij.psi.util.*;
+import com.intellij.psi.util.PsiFormatUtil;
+import com.intellij.psi.util.PsiFormatUtilBase;
+import com.intellij.psi.util.PsiTreeUtil;
+import com.intellij.psi.util.PsiUtil;
 import com.intellij.ui.IconManager;
 import com.intellij.ui.PlatformIcons;
 import com.intellij.util.ObjectUtils;
 import com.intellij.util.containers.ContainerUtil;
 import com.intellij.util.containers.JBIterable;
+import com.siyeh.ig.psiutils.JavaDeprecationUtils;
+import one.util.streamex.StreamEx;
 import org.jetbrains.annotations.NotNullByDefault;
 import org.jetbrains.annotations.Nullable;
 import org.jetbrains.annotations.Unmodifiable;
 
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
-import java.util.function.Consumer;
 
 import static com.intellij.patterns.PlatformPatterns.psiElement;
 import static com.intellij.patterns.PsiJavaPatterns.psiMethod;
 import static com.intellij.patterns.PsiJavaPatterns.virtualFile;
 
 @NotNullByDefault
-final class ReferenceItemProvider implements ModCompletionItemProvider {
+final class ReferenceItemProvider extends JavaModCompletionItemProvider {
   private static final ElementPattern<PsiElement> TOP_LEVEL_VAR_IN_MODULE = psiElement().withSuperParent(3, PsiJavaFile.class)
     .inVirtualFile(virtualFile().withName("module-info.java"));
   private static final ElementPattern<PsiElement> INSIDE_TYPECAST_EXPRESSION = psiElement().withParent(
@@ -63,7 +110,7 @@ final class ReferenceItemProvider implements ModCompletionItemProvider {
   private static final ElementPattern<PsiElement> AFTER_NEW = psiElement().afterLeaf(psiElement().withText(JavaKeywords.NEW));
   
   @Override
-  public void provideItems(CompletionContext context, Consumer<ModCompletionItem> sink) {
+  public void provideItems(CompletionContext context, ModCompletionResult sink) {
     PsiElement position = context.getPosition();
     if (!(position.getParent() instanceof PsiJavaCodeReferenceElement ref)) return;
     if (TOP_LEVEL_VAR_IN_MODULE.accepts(position) ||
@@ -219,7 +266,7 @@ final class ReferenceItemProvider implements ModCompletionItemProvider {
                                            ElementFilter elementFilter,
                                            JavaCompletionProcessor.Options options,
                                            CompletionContext parameters,
-                                           Consumer<ModCompletionItem> sink) {
+                                           ModCompletionResult sink) {
     Condition<String> nameCondition = s -> true;
     JavaCompletionProcessor processor = new JavaCompletionProcessor(element, elementFilter, options, nameCondition);
     PsiType plainQualifier = processor.getQualifierType();
@@ -245,7 +292,7 @@ final class ReferenceItemProvider implements ModCompletionItemProvider {
 
     Set<PsiType> expectedTypes = ObjectUtils.coalesce(JavaCompletionUtil.getExpectedTypes(parameters), Collections.emptySet());
 
-    //Set<PsiMember> mentioned = new HashSet<>();
+    Set<PsiMember> mentioned = new HashSet<>();
     //JavaCompletionUtil.JavaLookupElementHighlighter highlighter = getHighlighterForPlace(element, parameters.getOriginalFile().getVirtualFile());
     for (CompletionElement completionElement : processor.getResults()) {
       for (ModCompletionItem item : createLookupElements(completionElement, javaReference)) {
@@ -261,7 +308,7 @@ final class ReferenceItemProvider implements ModCompletionItemProvider {
           if (honorExcludes && JavaCompletionUtil.isInExcludedPackage(member, true)) {
             continue;
           }
-          //mentioned.add(CompletionUtil.getOriginalOrSelf(member));
+          mentioned.add(CompletionUtil.getOriginalOrSelf(member));
         }
         PsiTypeCompletionItem qualifierCast = null;
         PsiMember member = ObjectUtils.tryCast(item.contextObject(), PsiMember.class);
@@ -278,16 +325,18 @@ final class ReferenceItemProvider implements ModCompletionItemProvider {
       }
     }
     
-
-    //PsiElement refQualifier = javaReference.getQualifier();
-    //if (refQualifier == null && PsiTreeUtil.getParentOfType(element, PsiPackageStatement.class, PsiImportStatementBase.class) == null) {
-    //  StaticMemberProcessor memberProcessor = new JavaStaticMemberProcessor(parameters);
-    //  memberProcessor.processMembersOfRegisteredClasses(nameCondition, (member, psiClass) -> {
-    //    if (!mentioned.contains(member) && processor.satisfies(member, ResolveState.initial())) {
-    //      ContainerUtil.addIfNotNull(set, memberProcessor.createLookupElement(member, psiClass, true));
-    //    }
-    //  });
-    //}
+    PsiElement refQualifier = javaReference.getQualifier();
+    if (refQualifier == null && PsiTreeUtil.getParentOfType(element, PsiPackageStatement.class, PsiImportStatementBase.class) == null) {
+      ModJavaStaticMemberProcessor memberProcessor = new ModJavaStaticMemberProcessor(parameters);
+      memberProcessor.processMembersOfRegisteredClasses(nameCondition, (member, psiClass) -> {
+        if (!mentioned.contains(member) && processor.satisfies(member, ResolveState.initial())) {
+          ModCompletionItem item = memberProcessor.createCompletionItem(member, psiClass, true);
+          if (item != null) {
+            sink.accept(item);
+          }
+        }
+      });
+    }
     //else if (refQualifier instanceof PsiSuperExpression && ((PsiSuperExpression)refQualifier).getQualifier() == null) {
     //  set.addAll(SuperCalls.suggestQualifyingSuperCalls(element, javaReference, elementFilter, options, nameCondition));
     //}
@@ -313,14 +362,13 @@ final class ReferenceItemProvider implements ModCompletionItemProvider {
           .withPresentation(presentation));
       }
 
-      //if (completion instanceof PsiClass) {
-      //  List<JavaPsiClassReferenceElement> classItems = JavaClassNameCompletionContributor.createClassLookupItems(
-      //    CompletionUtil.getOriginalOrSelf((PsiClass)completion),
-      //    JavaClassNameCompletionContributor.AFTER_NEW.accepts(reference),
-      //    JavaClassNameInsertHandler.JAVA_CLASS_INSERT_HANDLER,
-      //    Conditions.alwaysTrue());
-      //  return JBIterable.from(classItems).flatMap(i -> JavaConstructorCallElement.wrap(i, reference.getElement()));
-      //}
+      if (completion instanceof PsiClass cls) {
+        List<ClassReferenceCompletionItem> classItems = NonImportedClassProvider.createClassLookupItems(
+          CompletionUtil.getOriginalOrSelf(cls),
+          JavaClassNameCompletionContributor.AFTER_NEW.accepts(reference),
+          Predicates.alwaysTrue());
+        return StreamEx.of(classItems).toFlatList(i -> ConstructorCallCompletionItem.tryWrap(i, reference.getElement()));
+      }
     }
 
     PsiSubstitutor substitutor = completionElement.getSubstitutor();
@@ -328,16 +376,21 @@ final class ReferenceItemProvider implements ModCompletionItemProvider {
     if (completion instanceof PsiClass cls) {
       return ConstructorCallCompletionItem.tryWrap(new ClassReferenceCompletionItem(cls).withSubstitutor(substitutor), reference.getElement());
     }
-    //if (completion instanceof PsiMethod) {
-    //  if (reference instanceof PsiMethodReferenceExpression) {
-    //    return Collections.singleton((LookupElement)new JavaMethodReferenceElement(
-    //      (PsiMethod)completion, (PsiMethodReferenceExpression)reference, completionElement.getMethodRefType()));
-    //  }
-    //
-    //  JavaMethodCallElement item = new JavaMethodCallElement((PsiMethod)completion).setQualifierSubstitutor(substitutor);
-    //  item.setForcedQualifier(completionElement.getQualifierText());
-    //  return Collections.singletonList(item);
-    //}
+    if (completion instanceof PsiMethod method) {
+      if (reference instanceof PsiMethodReferenceExpression mr) {
+        String lookup = method.isConstructor() ? JavaKeywords.NEW : method.getName();
+        MarkupText text = MarkupText.plainText(lookup).highlightAll(
+          JavaDeprecationUtils.isDeprecated(method, mr) ? MarkupText.Kind.STRIKEOUT : MarkupText.Kind.NORMAL);
+        return List.of(new CommonCompletionItem(lookup)
+                         .withObject(method)
+                         .withPresentation(new ModCompletionItemPresentation(text)
+                                             .withMainIcon(() -> method.getIcon(Iconable.ICON_FLAG_VISIBILITY))));
+      }
+
+      return List.of(new MethodCallCompletionItem(method)
+        .withQualifierSubstitutor(substitutor)
+        .withForcedQualifier(completionElement.getQualifierText()));
+    }
     if (completion instanceof PsiVariable var) {
       if (completion instanceof PsiEnumConstant enumConstant &&
           PsiTreeUtil.isAncestor(enumConstant.getArgumentList(), reference.getElement(), true)) {
@@ -353,6 +406,7 @@ final class ReferenceItemProvider implements ModCompletionItemProvider {
       return List.of(new CommonCompletionItem(StringUtil.notNullize(pkg.getName()))
                        .withObject(pkg)
                        .withTail(addDot ? ModNavigatorTailType.dotType() : ModNavigatorTailType.noneType())
+                       .withAdditionalUpdater(((completionStart, updater) -> updater.editorAction(ModLaunchEditorAction.ACTION_CODE_COMPLETION, true)))
                        .withPresentation(new ModCompletionItemPresentation(MarkupText.plainText(pkg.getName()+(addDot?".":"")))
                                            .withMainIcon(() -> IconManager.getInstance().getPlatformIcon(PlatformIcons.Package))));
     }
@@ -370,8 +424,7 @@ final class ReferenceItemProvider implements ModCompletionItemProvider {
       if (ref != null) {
         PsiElement qualifier = ref.getQualifier();
         if (qualifier != null) {
-          Language lang = PsiUtilCore.getLanguageAtOffset(file, updater.getCaretOffset());
-          CommonCodeStyleSettings settings = CodeStyle.getLanguageSettings(file, lang);
+          CommonCodeStyleSettings settings = CodeStyle.getLanguageSettings(file, JavaLanguage.INSTANCE);
 
           String parenSpace = settings.SPACE_WITHIN_PARENTHESES ? " " : "";
           document.insertString(qualifier.getTextRange().getEndOffset(), parenSpace + ")");

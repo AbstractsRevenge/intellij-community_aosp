@@ -141,7 +141,6 @@ class EditorCellOutputsView(
 
   @RequiresEdt
   private fun updateData(outputs: List<EditorCellOutput>): Boolean {
-
     var outputs = outputs
     if(outputs.isNotEmpty()) {
       EditorCellOutputsPreprocessor.EP_NAME.extensionList.forEach {

@@ -130,6 +130,9 @@ object CoreModuleSets {
     embeddedModule("intellij.libraries.velocity")
     embeddedModule("intellij.libraries.xtext.xbase")
     embeddedModule("intellij.libraries.xz")
+    // Temporary embedded while opentelemetry-exporter-otlp-common library remains embedded due to a dependency (IJPL-233394)
+    embeddedModule("intellij.libraries.opentelemetry.sdk.autoconfigure.spi")
+    embeddedModule("intellij.libraries.opentelemetry.exporter.sender.jdk")
   }
 
   /**
@@ -169,6 +172,7 @@ object CoreModuleSets {
     embeddedModule("intellij.libraries.ktor.io")
     embeddedModule("intellij.libraries.ktor.utils")
     embeddedModule("intellij.libraries.ktor.network.tls")
+    embeddedModule("intellij.libraries.ktor.server.cio")
     embeddedModule("intellij.libraries.ktor.client")
     embeddedModule("intellij.libraries.ktor.client.cio")
   }
@@ -245,6 +249,9 @@ object CoreModuleSets {
     embeddedModule("intellij.platform.core")
     embeddedModule("intellij.platform.core.ui")
     embeddedModule("intellij.platform.core.impl")
+    embeddedModule("intellij.platform.projectFrame")
+    embeddedModule("intellij.platform.welcomeScreen")
+    embeddedModule("intellij.platform.welcomeScreen.impl")
 
     embeddedModule("intellij.platform.projectModel")
     embeddedModule("intellij.platform.projectModel.impl")
@@ -352,6 +359,8 @@ object CoreModuleSets {
     embeddedModule("fleet.reporting.api")
     embeddedModule("fleet.reporting.shared")
     embeddedModule("fleet.rhizomedb")
+    embeddedModule("fleet.rhizomedb.transactor")
+    embeddedModule("fleet.rhizomedb.transactor.rebase")
     embeddedModule("fleet.rpc")
     embeddedModule("fleet.util.codepoints")
     embeddedModule("fleet.util.core")

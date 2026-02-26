@@ -4,7 +4,11 @@ package com.intellij.vcs.log.statistics;
 import com.intellij.ide.trustedProjects.TrustedProjects;
 import com.intellij.internal.statistic.beans.MetricEvent;
 import com.intellij.internal.statistic.eventLog.EventLogGroup;
-import com.intellij.internal.statistic.eventLog.events.*;
+import com.intellij.internal.statistic.eventLog.events.EventFields;
+import com.intellij.internal.statistic.eventLog.events.EventId;
+import com.intellij.internal.statistic.eventLog.events.EventId1;
+import com.intellij.internal.statistic.eventLog.events.EventId2;
+import com.intellij.internal.statistic.eventLog.events.StringEventField;
 import com.intellij.internal.statistic.service.fus.collectors.ProjectUsagesCollector;
 import com.intellij.internal.statistic.service.fus.collectors.UsageDescriptorKeyValidator;
 import com.intellij.internal.statistic.utils.PluginInfoDetectorKt;
@@ -15,9 +19,10 @@ import com.intellij.openapi.vcs.VcsKey;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.util.containers.ContainerUtil;
 import com.intellij.util.containers.MultiMap;
+import com.intellij.vcs.log.VcsLogAggregatedStoredRefsKt;
 import com.intellij.vcs.log.VcsLogProvider;
-import com.intellij.vcs.log.data.DataPack;
 import com.intellij.vcs.log.data.VcsLogData;
+import com.intellij.vcs.log.data.VcsLogGraphData;
 import com.intellij.vcs.log.impl.VcsProjectLog;
 import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.NonNls;
@@ -53,10 +58,10 @@ public @NonNls class VcsLogRepoSizeCollector extends ProjectUsagesCollector {
 
     VcsLogData logData = projectLog.getDataManager();
     if (logData != null) {
-      DataPack dataPack = logData.getDataPack();
+      VcsLogGraphData dataPack = logData.getGraphData();
       if (dataPack.isFull()) {
         int commitCount = dataPack.getPermanentGraph().getAllCommits().size();
-        int branchesCount = dataPack.getRefsModel().getBranches().size();
+        int branchesCount = VcsLogAggregatedStoredRefsKt.getBranches(dataPack.getRefsModel()).size();
         int usersCount = logData.getAllUsers().size();
         Set<MetricEvent> usages = ContainerUtil.newHashSet(DATA_INITIALIZED.metric());
         usages.add(COMMIT_COUNT.metric(StatisticsUtil.roundToPowerOfTwo(commitCount)));

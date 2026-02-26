@@ -4,12 +4,21 @@ package com.intellij.codeInsight.completion;
 import com.intellij.codeInsight.lookup.LookupElementPresentation;
 import com.intellij.java.JavaBundle;
 import com.intellij.openapi.util.text.StringUtil;
-import com.intellij.psi.*;
+import com.intellij.psi.JavaPsiFacade;
+import com.intellij.psi.PsiClass;
+import com.intellij.psi.PsiClassType;
+import com.intellij.psi.PsiField;
+import com.intellij.psi.PsiMember;
+import com.intellij.psi.PsiMethod;
+import com.intellij.psi.PsiSubstitutor;
+import com.intellij.psi.PsiType;
+import com.intellij.psi.PsiWildcardType;
 import com.intellij.psi.util.PsiFormatUtil;
 import com.intellij.psi.util.PsiFormatUtilBase;
 import com.intellij.psi.util.PsiTypesUtil;
 import com.intellij.psi.util.TypeConversionUtil;
 import com.intellij.util.containers.ContainerUtil;
+import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -53,6 +62,10 @@ public final class MemberLookupHelper {
 
   public boolean willBeImported() {
     return myShouldImport;
+  }
+  
+  public boolean isMergedOverloads() {
+    return myMergedOverloads;
   }
 
   public void renderElement(@NotNull LookupElementPresentation presentation,
@@ -113,10 +126,11 @@ public final class MemberLookupHelper {
     return null;
   }
 
-  private static @Nullable PsiType patchGetClass(@NotNull PsiMethod method, @Nullable PsiType type) {
-    if (PsiTypesUtil.isGetClass(method) && type instanceof PsiClassType) {
-      PsiType arg = ContainerUtil.getFirstItem(Arrays.asList(((PsiClassType)type).getParameters()));
-      PsiType bound = arg instanceof PsiWildcardType ? TypeConversionUtil.erasure(((PsiWildcardType)arg).getExtendsBound()) : null;
+  @ApiStatus.Internal
+  public static @Nullable PsiType patchGetClass(@NotNull PsiMethod method, @Nullable PsiType type) {
+    if (PsiTypesUtil.isGetClass(method) && type instanceof PsiClassType classType) {
+      PsiType arg = ContainerUtil.getFirstItem(Arrays.asList(classType.getParameters()));
+      PsiType bound = arg instanceof PsiWildcardType wildcardType ? TypeConversionUtil.erasure(wildcardType.getExtendsBound()) : null;
       if (bound != null) {
         return PsiTypesUtil.createJavaLangClassType(method, bound, false);
       }

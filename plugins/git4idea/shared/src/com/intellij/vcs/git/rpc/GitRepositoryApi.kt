@@ -4,8 +4,8 @@ package com.intellij.vcs.git.rpc
 import com.intellij.openapi.project.Project
 import com.intellij.platform.project.ProjectId
 import com.intellij.platform.rpc.RemoteApiProviderService
+import com.intellij.platform.vcs.impl.shared.RepositoryId
 import com.intellij.platform.vcs.impl.shared.rpc.FilePathDto
-import com.intellij.platform.vcs.impl.shared.rpc.RepositoryId
 import com.intellij.vcs.git.ref.GitCurrentRef
 import com.intellij.vcs.git.ref.GitFavoriteRefs
 import com.intellij.vcs.git.ref.GitReferenceName
@@ -14,7 +14,11 @@ import com.intellij.vcs.git.repo.GitOperationState
 import fleet.rpc.RemoteApi
 import fleet.rpc.Rpc
 import fleet.rpc.remoteApiDescriptor
-import git4idea.*
+import git4idea.GitDisposable
+import git4idea.GitStandardLocalBranch
+import git4idea.GitStandardRemoteBranch
+import git4idea.GitTag
+import git4idea.GitWorkingTree
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable

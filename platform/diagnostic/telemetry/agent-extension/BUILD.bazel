@@ -36,8 +36,10 @@ jvm_library(
     "@lib//:junit5",
     "@lib//:opentelemetry-exporter-otlp-common",
     "//libraries/jackson/jackson",
+    "//libraries/jackson/jackson:jackson_test_lib",
     "@lib//:io-opentelemetry-sdk-extension-autoconfigure-spi-provided",
     "//libraries/jackson/databind",
+    "//libraries/jackson/databind:databind_test_lib",
     "@lib//:kotlin-stdlib",
   ]
 )
